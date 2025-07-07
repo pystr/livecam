@@ -27,7 +27,9 @@ app.use(express.static(__dirname));
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'publisher.html'));
 });
-
+app.get('/hello', (req, res) => {
+    res.send('Hello, World!'); // Basit bir test mesajı
+});
 // /subscriber URL'ye yapılan GET isteğinde subscriber.html dosyasını gönder
 app.get('/subscriber', (req, res) => {
     res.sendFile(path.join(__dirname, 'subscriber.html'));

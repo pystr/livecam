@@ -23,7 +23,11 @@ app.use(express.static(path.join(__dirname, 'public'))); // Statik dosyalarını
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'publisher.html'));
 });
+// server.js dosyanızda, diğer app.get() tanımlamalarının altına veya üstüne ekleyebilirsiniz.
 
+app.get('/hello', (req, res) => {
+    res.send('Merhaba, sunucu çalışıyor!');
+});
 // Abone sayfasını sun
 app.get('/subscriber', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'subscriber.html'));

@@ -1,0 +1,1066 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kamera İzleme</title>
+    <!-- PWA Manifest Dosyası -->
+    <link rel="manifest" href="/manifest.json">
+    <!-- Socket.IO istemci kütüphanesi. Sunucu çalışırken bu URL otomatik olarak sunulur. -->
+    <script src="/socket.io/socket.io.js"></script>
+    <!-- TensorFlow.js kütüphanesi -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+    <!-- COCO-SSD modeli (nesne algılama için) -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+    <!-- QRious kütüphanesi (QR kodu oluşturmak için) -->
+    <script src="https://cdn.jsdelivr.net/npm/qrious@4.0.2/dist/qrious.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+        body {
+            font-family: 'Inter', sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #e0f7fa 0%, #bbdefb 100%); /* Soft gradient background */
+            color: #333;
+            min-height: 100vh;
+            box-sizing: border-box;
+            transition: background-color 0.3s ease-in-out; /* Arka plan geçişi */
+        }
+        /* Alarm tetiklendiğinde arka planın yanıp sönmesi */
+        body.alarm-active {
+            animation: background-flash 0.5s infinite alternate;
+        }
+
+        @keyframes background-flash {
+            from { background-color: white; } /* Beyazdan başla */
+            to { background-color: #ff0000; } /* Kırmızıya geç */
+        }
+
+        .container {
+            background-color: #ffffff;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15); /* More pronounced shadow */
+            max-width: 900px;
+            width: 100%;
+            margin-bottom: 25px;
+            text-align: center;
+            transition: transform 0.3s ease-in-out;
+        }
+        .container:hover {
+            transform: translateY(-5px); /* Subtle hover effect */
+        }
+        h1 { /* This H1 is now for "İzlenen Kamera" */
+            color: #1a237e; /* Darker blue for headings */
+            margin-bottom: 25px;
+            font-weight: 700;
+            font-size: 2.2em;
+        }
+        p {
+            font-size: 1.1em;
+            color: #555;
+            line-height: 1.6;
+        }
+        video {
+            display: none; /* Video element is hidden, used only to get the stream */
+        }
+        canvas {
+            border: 3px solid #42a5f5; /* Thicker, more vibrant border */
+            border-radius: 12px;
+            margin: 15px 10px;
+            background-color: #f0f0f0;
+            max-width: 100%; 
+            height: auto;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+            transition: all 0.3s ease-in-out;
+        }
+        canvas:hover {
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.2);
+            border-color: #2196f3;
+        }
+        .canvas-wrapper {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 25px; /* Increased gap */
+            width: 100%;
+            max-width: 900px;
+            margin-bottom: 25px; /* Add margin below canvas */
+        }
+        button {
+            padding: 12px 25px;
+            font-size: 1.1em;
+            font-weight: 600;
+            background: linear-gradient(45deg, #4CAF50 0%, #66BB6A 100%); /* Green gradient */
+            color: white;
+            border: none;
+            border-radius: 8px; /* More rounded corners */
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-top: 25px;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        button:hover {
+            background: linear-gradient(45deg, #388E3C 0%, #4CAF50 100%); /* Darker green on hover */
+            box-shadow: 0 6px 15px rgba(0, 0, 0, 0.3);
+            transform: translateY(-2px);
+        }
+        button:active {
+            transform: translateY(0);
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+        }
+        #message {
+            margin-top: 20px;
+            font-size: 1.15em;
+            font-weight: 500;
+            color: #d32f2f; /* Error red */
+            background-color: #ffebee;
+            padding: 10px 15px;
+            border-radius: 8px;
+            border: 1px solid #ef9a9a;
+        }
+        .canvas-label {
+            font-weight: 600;
+            margin-top: 15px;
+            color: #444;
+            font-size: 1.1em;
+        }
+        /* Bilgi kutusunu gizle */
+        .info-box {
+            display: none;
+        }
+        /* Sohbet alanını tamamen gizle */
+        .chat-container {
+            display: none; 
+        }
+        #chatMessages {
+            display: none;
+        }
+        #chatInput {
+            display: none;
+        }
+        #sendChat {
+            display: none;
+        }
+
+        .room-setup {
+            margin-bottom: 30px;
+            padding: 25px;
+            border: 1px solid #90caf9;
+            background-color: #e3f2fd;
+            border-radius: 12px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.08);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .room-setup label {
+            font-size: 1.1em;
+            font-weight: 500;
+            color: #3f51b5;
+            margin-bottom: 10px;
+        }
+        .room-setup input {
+            padding: 10px 15px;
+            border: 1px solid #bbdefb;
+            border-radius: 6px;
+            margin-right: 15px;
+            font-size: 1em;
+            flex-grow: 1;
+            max-width: 300px;
+            transition: border-color 0.3s ease, box-shadow 0.3s ease;
+        }
+        .room-setup input:focus {
+            border-color: #64b5f6;
+            box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.2);
+            outline: none;
+        }
+        .room-setup button {
+            margin-top: 15px;
+            background: linear-gradient(45deg, #1976d2 0%, #2196f3 100%);
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.15);
+        }
+        .room-setup button:hover {
+            background: linear-gradient(45deg, #1565c0 0%, #1976d2 100%);
+            box-shadow: 0 6px 15px rgba(0, 0, 0, 0.25);
+        }
+        #roomStatus {
+            font-weight: 600;
+            margin-top: 15px;
+            color: #3f51b5;
+            font-size: 1em;
+        }
+
+        .viewer-url-display {
+            background-color: #e8f5e9;
+            border: 1px solid #a5d6a7;
+            border-radius: 10px;
+            padding: 15px;
+            margin-top: 20px;
+            font-size: 1em;
+            color: #388e3c;
+            box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.05);
+            word-break: break-all; /* Long URL'leri kırmak için */
+            display: flex; /* Flexbox for alignment */
+            flex-direction: column; /* Stack items vertically */
+            align-items: center;
+            justify-content: center;
+            flex-wrap: wrap; /* Allow wrapping on small screens */
+        }
+        .viewer-url-display a {
+            color: #1a237e;
+            font-weight: bold;
+            text-decoration: none;
+            margin-bottom: 10px; /* Space between URL and QR code/button */
+        }
+        .viewer-url-display a:hover {
+            text-decoration: underline;
+        }
+        .copy-button {
+            background: linear-gradient(45deg, #fbc02d 0%, #ffeb3b 100%);
+            margin-top: 10px; /* Space above button */
+            padding: 8px 15px;
+            font-size: 0.9em;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+            color: #333;
+        }
+        .copy-button:hover {
+            background: linear-gradient(45deg, #f9a825 0%, #fbc02d 100%);
+            box-shadow: 0 3px 8px rgba(0, 0, 0, 0.2);
+        }
+        #qrCodeCanvas {
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            margin-top: 15px; /* Space above QR code */
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+        }
+
+        /* Alarm Section Styles (copied from subscriber) */
+        .alarm-section {
+            margin-top: 40px;
+            padding: 25px;
+            border: 1px solid #ffcc80;
+            background-color: #fff3e0;
+            border-radius: 12px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.08);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        #alarmStatus {
+            font-weight: 600;
+            color: #e65100;
+            margin-top: 15px;
+            font-size: 1.1em;
+        }
+        .alarm-triggered {
+            color: #d32f2f;
+            font-size: 1.3em;
+            animation: blinker 1s linear infinite;
+            font-weight: 700;
+        }
+        @keyframes blinker {
+            50% { opacity: 0; }
+        }
+        .alarm-section label {
+            font-size: 1.1em;
+            font-weight: 500;
+            color: #e65100;
+            margin-bottom: 10px;
+        }
+        .alarm-section select {
+            padding: 10px 15px;
+            border: 1px solid #ffb74d;
+            border-radius: 6px;
+            margin-right: 15px;
+            margin-bottom: 15px;
+            font-size: 1em;
+            max-width: 300px;
+            width: 100%;
+            transition: border-color 0.3s ease, box-shadow 0.3s ease;
+        }
+        .alarm-section select:focus {
+            border-color: #ff9800;
+            box-shadow: 0 0 0 3px rgba(255, 152, 0, 0.2);
+            outline: none;
+        }
+        .alarm-section button {
+            margin-top: 15px;
+            background: linear-gradient(45deg, #ff9800 0%, #ffb74d 100%);
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.15);
+        }
+        .alarm-section button:hover {
+            background: linear-gradient(45deg, #fb8c00 0%, #ff9800 100%);
+            box-shadow: 0 6px 15px rgba(0, 0, 0, 0.25);
+        }
+
+        /* Hareketli ışıklar için stil (moved to top) */
+        .moving-lights-container {
+            width: 100%;
+            max-width: 900px;
+            height: 30px; /* Işıkların yüksekliği */
+            margin-bottom: 25px; /* Canvas'ın üstüne geldiği için margin-top yerine margin-bottom */
+            overflow: hidden; /* Işıkların dışarı taşmasını engelle */
+            position: relative;
+            background-color: #333; /* Işıkların arka planı */
+            border-radius: 8px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+            display: none; /* Başlangıçta gizli */
+        }
+
+        .moving-light {
+            position: absolute;
+            top: 0;
+            width: 20px; /* Işıkların genişliği */
+            height: 100%;
+            /* Kırmızı ışık efekti - daha koyu kırmızı */
+            background: linear-gradient(to right, rgba(139,0,0,0) 0%, #8B0000 50%, rgba(139,0,0,0) 100%);
+            animation: move-light 2s linear infinite;
+            opacity: 0; /* Başlangıçta gizli */
+        }
+
+        .moving-light.blue {
+            background: linear-gradient(to right, rgba(0,0,255,0) 0%, blue 50%, rgba(0,0,255,0) 100%); /* Mavi ışık efekti */
+            animation-delay: 1s; /* Kırmızı ışıktan sonra başla */
+        }
+
+        .moving-lights-container.active .moving-light {
+            opacity: 1; /* Aktif olduğunda görünür yap */
+        }
+
+        @keyframes move-light {
+            0% { left: -20%; opacity: 0; }
+            25% { opacity: 1; }
+            75% { opacity: 1; }
+            100% { left: 120%; opacity: 0; }
+        }
+
+        /* Log Section Styles (copied from subscriber) */
+        .log-section {
+            margin-top: 40px;
+            padding: 25px;
+            border: 1px solid #c0c0c0;
+            background-color: #f9f9f9;
+            border-radius: 12px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.08);
+            width: 100%;
+            max-width: 900px;
+            text-align: left;
+        }
+        .log-section h2 {
+            color: #333;
+            margin-bottom: 20px;
+        }
+        .log-filters {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            margin-bottom: 20px;
+            align-items: flex-end;
+        }
+        .log-filters div {
+            display: flex;
+            flex-direction: column;
+        }
+        .log-filters label {
+            font-size: 0.9em;
+            color: #555;
+            margin-bottom: 5px;
+        }
+        .log-filters input[type="datetime-local"] {
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            font-size: 0.9em;
+        }
+        .log-filters button {
+            margin-top: 0;
+            padding: 10px 20px;
+            font-size: 0.9em;
+            background: linear-gradient(45deg, #007bff 0%, #0056b3 100%);
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+        }
+        .log-filters button:hover {
+            background: linear-gradient(45deg, #0056b3 0%, #007bff 100%);
+            box-shadow: 0 3px 8px rgba(0, 0, 0, 0.2);
+        }
+        #alarmLogsDisplay {
+            border: 1px solid #eee;
+            background-color: #fff;
+            padding: 15px;
+            border-radius: 8px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-size: 0.9em;
+            line-height: 1.6;
+        }
+        #alarmLogsDisplay div {
+            margin-bottom: 8px;
+            padding-bottom: 8px;
+            border-bottom: 1px dashed #eee;
+        }
+        #alarmLogsDisplay div:last-child {
+            border-bottom: none;
+        }
+        .log-entry-type-alarm_set { color: #28a745; font-weight: bold; }
+        .log-entry-type-alarm_triggered { color: #dc3545; font-weight: bold; animation: pulse-log 1s infinite alternate; }
+        .log-entry-type-alarm_muted { color: #6c757d; }
+        .log-entry-type-alarm_reset { color: #ffc107; }
+        .log-entry-type-alarm_error { color: #d32f2f; font-weight: bold; } /* New style for alarm errors */
+
+        @keyframes pulse-log {
+            from { opacity: 1; }
+            to { opacity: 0.7; }
+        }
+
+        /* Responsive adjustments */
+        @media (max-width: 768px) {
+            .container {
+                padding: 20px;
+            }
+            h1 {
+                font-size: 1.8em;
+            }
+            p {
+                font-size: 1em;
+            }
+            button {
+                padding: 10px 20px;
+                font-size: 1em;
+            }
+            .room-setup input, .alarm-section select {
+                width: 100%;
+                margin-right: 0;
+                margin-bottom: 15px;
+            }
+            .room-setup, .alarm-section {
+                flex-direction: column;
+            }
+            .viewer-url-display {
+                flex-direction: column;
+                align-items: center;
+            }
+            .viewer-url-display a {
+                margin-right: 0;
+                margin-bottom: 10px;
+            }
+            .copy-button {
+                margin-left: 0;
+                margin-top: 10px;
+                width: 100%;
+            }
+            .moving-lights-container {
+                height: 20px; /* Mobil için daha küçük ışıklar */
+            }
+            .log-filters {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            .log-filters input[type="datetime-local"] {
+                width: 100%;
+            }
+            .log-filters button {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Kamera İzleme</h1>
+        <p id="message"></p>
+    </div>
+
+    <!-- Hareketli ışıklar alanı (üstte) -->
+    <div class="moving-lights-container" id="movingLightsContainer">
+        <div class="moving-light"></div>
+        <div class="moving-light blue"></div>
+    </div>
+
+    <!-- Video akışını almak için gizli video elemanı -->
+    <video id="videoElement" autoplay playsinline muted></video>
+    
+    <div class="canvas-wrapper">
+        <div>
+            <div class="canvas-label">Kamera Görüntünüz</div>
+            <!-- Yayıncının görüntüyü çizeceği Canvas -->
+            <canvas id="publisherCanvas"></canvas>
+        </div>
+    </div>
+
+    <div class="container room-setup">
+        <label for="cameraNameInput">Kamera Adı:</label>
+        <input type="text" id="cameraNameInput" placeholder="Kameranıza bir isim verin" value="kamera1">
+        <button id="createRoomButton">Yayını Başlat</button>
+        <p id="roomStatus" style="font-weight: bold; margin-top: 10px; color: #3f51b5;"></p>
+    </div>
+
+    <!-- İzleyici URL'sinin ve QR kodunun görüntüleneceği alan -->
+    <div class="container viewer-url-display" style="display: none;">
+        <strong>İzleyici Bağlantısı:</strong>
+        <span id="viewerUrlText"></span>
+        <canvas id="qrCodeCanvas"></canvas> <!-- QR kodu için yeni canvas -->
+        <button id="copyUrlButton" class="copy-button">URL'yi Kopyala</button>
+    </div>
+    
+    <!-- Alarm Section (copied from subscriber) -->
+    <div class="container alarm-section">
+        <h2>Hareket Algılama Alarmı</h2>
+        <label for="detectionTarget">Algılama Hedefi:</label>
+        <select id="detectionTarget">
+            <option value="everything">Her Şey (Algılanan herhangi bir nesne)</option>
+            <option value="human">İnsan</option>
+            <option value="cat">Kedi</option>
+            <option value="animal">Hayvan (Kedi, Köpek, At, Koyun, İnek, Fil, Ayı, Zebra, Zürafa)</option>
+        </select>
+        <button id="setAlarmButton">Alarmı Kur</button>
+        <button id="muteAlarmButton" style="background-color: #dc3545; margin-top: 10px; display: none;">Sustur</button>
+        <p id="alarmStatus">Alarm Durumu: Kapalı</p>
+    </div>
+
+    <!-- Alarm Logları Alanı (copied from subscriber) -->
+    <div class="container log-section">
+        <h2>Alarm Logları</h2>
+        <div class="log-filters">
+            <div>
+                <label for="startDate">Başlangıç Tarih/Saat:</label>
+                <input type="datetime-local" id="startDate">
+            </div>
+            <div>
+                <label for="endDate">Bitiş Tarih/Saat:</label>
+                <input type="datetime-local" id="endDate">
+            </div>
+            <button id="filterLogsButton">Logları Filtrele</button>
+            <button id="clearLogsButton" style="background: linear-gradient(45deg, #6c757d 0%, #868e96 100%);">Logları Temizle</button>
+        </div>
+        <div id="alarmLogsDisplay">
+            <!-- Loglar buraya eklenecek -->
+        </div>
+    </div>
+
+    <script>
+        // Service Worker'ı kaydet
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/service-worker.js')
+                    .then(registration => {
+                        console.log('Service Worker başarıyla kaydedildi:', registration.scope);
+                    })
+                    .catch(error => {
+                        console.error('Service Worker kaydı başarısız oldu:', error);
+                    });
+            });
+        }
+
+        const videoElement = document.getElementById('videoElement');
+        const publisherCanvas = document.getElementById('publisherCanvas');
+        const publisherContext = publisherCanvas.getContext('2d');
+        const startButton = document.getElementById('createRoomButton');
+        const messageDiv = document.getElementById('message');
+        const cameraNameInput = document.getElementById('cameraNameInput');
+        const roomStatusDiv = document.getElementById('roomStatus');
+        const viewerUrlDisplay = document.querySelector('.viewer-url-display');
+        const viewerUrlText = document.getElementById('viewerUrlText');
+        const copyUrlButton = document.getElementById('copyUrlButton');
+        const qrCodeCanvas = document.getElementById('qrCodeCanvas');
+
+        // Alarm ile ilgili yeni elemanlar
+        const setAlarmButton = document.getElementById('setAlarmButton');
+        const muteAlarmButton = document.getElementById('muteAlarmButton');
+        const alarmStatusDiv = document.getElementById('alarmStatus');
+        const detectionTargetSelect = document.getElementById('detectionTarget');
+        const movingLightsContainer = document.getElementById('movingLightsContainer');
+
+        // Log ile ilgili yeni elemanlar
+        const startDateInput = document.getElementById('startDate');
+        const endDateInput = document.getElementById('endDate');
+        const filterLogsButton = document.getElementById('filterLogsButton');
+        const clearLogsButton = document.getElementById('clearLogsButton');
+        const alarmLogsDisplay = document.getElementById('alarmLogsDisplay');
+
+        let animationFrameId;
+        let isStreaming = false;
+        const frameRate = 10; // Saniyede kaç kare gönderileceği (FPS)
+        let lastFrameTime = 0;
+        let currentCameraName = '';
+
+        // Alarm ile ilgili yeni değişkenler
+        let alarmIsSet = false;
+        let alarmActivationTimeoutId = null;
+        let alarmCountdownIntervalId = null;
+
+        // Nesne algılama ile ilgili yeni değişkenler
+        let objectDetectionModel = null;
+        let modelLoaded = false;
+        const detectionConfidenceThreshold = 0.6;
+
+        const TARGET_CLASSES = {
+            'human': ['person'],
+            'cat': ['cat'],
+            'animal': ['cat', 'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe'],
+            'everything': []
+        };
+
+        const ANALYSIS_FPS = 5; // Saniyede 5 kez analiz yap
+        const ANALYSIS_INTERVAL_MS = 1000 / ANALYSIS_FPS;
+        let lastAnalysisTime = 0;
+        const ANALYSIS_WIDTH = 300; // Analiz için görüntüyü bu genişliğe küçült
+        const ANALYSIS_HEIGHT = 300; // Analiz için görüntüyü bu yüksekliğe küçült
+
+        const socket = io();
+
+        // Siren sesi için Audio nesnesi
+        const sirenAudio = new Audio('/siren.mp3'); // siren.mp3 dosyasının yolu
+        sirenAudio.loop = true; // Sürekli çalması için
+
+        // Alarm loglarını tutacak dizi
+        let alarmLogs = [];
+
+        // Log girişini ekleme fonksiyonu
+        function addLogEntry(type, message) {
+            const allowedLogTypes = ['alarm_set', 'alarm_triggered', 'alarm_muted', 'alarm_reset', 'alarm_error'];
+            if (allowedLogTypes.includes(type)) {
+                const timestamp = new Date();
+                const logEntry = { timestamp, type, message };
+                alarmLogs.push(logEntry);
+                displayLogs(alarmLogs);
+            }
+        }
+
+        // Logları görüntüleme fonksiyonu
+        function displayLogs(logsToDisplay) {
+            alarmLogsDisplay.innerHTML = '';
+            const sortedLogs = [...logsToDisplay].sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+
+            if (sortedLogs.length === 0) {
+                alarmLogsDisplay.innerHTML = '<div>Henüz bir log kaydı yok.</div>';
+                return;
+            }
+
+            sortedLogs.forEach(log => {
+                const logElement = document.createElement('div');
+                logElement.classList.add(`log-entry-type-${log.type}`);
+                const formattedTime = log.timestamp.toLocaleString('tr-TR', {
+                    year: 'numeric', month: '2-digit', day: '2-digit',
+                    hour: '2-digit', minute: '2-digit', second: '2-digit'
+                });
+                logElement.innerHTML = `<strong>[${formattedTime}]</strong> ${log.message}`;
+                alarmLogsDisplay.appendChild(logElement);
+            });
+        }
+
+        // Logları filtreleme fonksiyonu
+        function filterLogs() {
+            const startDateTime = startDateInput.value ? new Date(startDateInput.value) : null;
+            const endDateTime = endDateInput.value ? new Date(endDateInput.value) : null;
+
+            const filtered = alarmLogs.filter(log => {
+                const logTime = log.timestamp;
+                const isAfterStart = !startDateTime || logTime >= startDateTime;
+                const isBeforeEnd = !endDateTime || logTime <= endDateTime;
+                return isAfterStart && isBeforeEnd;
+            });
+            displayLogs(filtered);
+        }
+
+        // Logları temizleme fonksiyonu
+        function clearAllLogs() {
+            alarmLogs = [];
+            addLogEntry('alarm_reset', 'Tüm loglar temizlendi.');
+        }
+
+        // Siren çalma fonksiyonu
+        function playSiren() {
+            sirenAudio.play().catch(e => {
+                console.error("Siren sesi oynatılamadı:", e);
+                messageDiv.textContent = 'Siren sesi oynatılamadı. Lütfen sayfayla etkileşim kurun veya otomatik oynatma izinlerini kontrol edin.';
+                messageDiv.style.color = 'red';
+            });
+        }
+
+        // Siren durdurma fonksiyonu
+        function stopSiren() {
+            sirenAudio.pause();
+            sirenAudio.currentTime = 0; // Başa sar
+        }
+
+        // TensorFlow.js modelini yükle
+        async function loadObjectDetectionModel() {
+            messageDiv.textContent = 'Nesne algılama modeli yükleniyor...';
+            messageDiv.style.color = 'blue';
+            try {
+                objectDetectionModel = await cocoSsd.load();
+                modelLoaded = true;
+                messageDiv.textContent = 'Nesne algılama modeli yüklendi.';
+                messageDiv.style.color = 'green';
+                console.log('COCO-SSD model loaded successfully.');
+            } catch (error) {
+                console.error('Nesne algılama modeli yüklenirken hata:', error);
+                messageDiv.textContent = `Model yüklenemedi: ${error.message}`;
+                messageDiv.style.color = 'red';
+                addLogEntry('alarm_error', `Model yüklenemedi: ${error.message}`);
+            }
+        }
+
+        window.onload = () => {
+            loadObjectDetectionModel();
+            displayLogs(alarmLogs); // Sayfa yüklendiğinde mevcut logları göster
+        };
+
+        // Socket.IO bağlantı olayları
+        socket.on('connect', () => {
+            console.log('Socket.IO sunucusuna bağlandı.');
+        });
+
+        socket.on('disconnect', () => {
+            console.log('Socket.IO sunucusundan bağlantı kesildi.');
+            messageDiv.textContent = 'Sunucu bağlantısı kesildi.';
+            messageDiv.style.color = 'red';
+            isStreaming = false;
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
+            }
+            if (videoElement.srcObject) {
+                videoElement.srcObject.getTracks().forEach(track => track.stop());
+            }
+            roomStatusDiv.textContent = 'Bağlantı kesildi.';
+            currentCameraName = '';
+            viewerUrlDisplay.style.display = 'none'; // URL'yi gizle
+            resetAlarmState(); // Bağlantı kesildiğinde alarmı sıfırla
+        });
+
+        socket.on('connect_error', (err) => {
+            console.error('Socket.IO bağlantı hatası:', err);
+            messageDiv.textContent = `Sunucuya bağlanılamadı: ${err.message}`;
+            messageDiv.style.color = 'red';
+            addLogEntry('alarm_error', `Sunucuya bağlanılamadı: ${err.message}`);
+        });
+
+        // Sunucudan oda oluşturma onayı geldiğinde
+        socket.on('roomCreated', (roomName) => {
+            currentCameraName = roomName;
+            roomStatusDiv.textContent = `Kamera "${roomName}" yayına hazır!`;
+            cameraNameInput.disabled = true; // Kamera adı değiştirilemez hale getir
+            startButton.textContent = 'Yayını Durdur'; // Buton metnini değiştir
+            messageDiv.textContent = ''; // Başarılı mesajı kaldırıldı, sadece hata durumunda gösterilecek
+            isStreaming = true;
+            drawVideoToCanvasAndStream(0); // Video akışını başlat
+
+            // İzleyici URL'sini oluştur ve göster
+            const viewerUrl = `${window.location.origin}/subscriber?cameraName=${encodeURIComponent(currentCameraName)}`;
+            viewerUrlText.innerHTML = `<a href="${viewerUrl}" target="_blank">${viewerUrl}</a>`;
+            viewerUrlDisplay.style.display = 'flex'; // URL alanını göster
+
+            // QR kodu oluştur
+            new QRious({
+                element: qrCodeCanvas,
+                value: viewerUrl,
+                size: 150, // QR kodunun boyutu
+                padding: 10, // QR kodu etrafındaki boşluk
+                background: 'white', // Arka plan rengi
+                foreground: 'black' // Ön plan rengi
+            });
+        });
+
+        startButton.addEventListener('click', createRoomAndStream);
+        copyUrlButton.addEventListener('click', () => {
+            const urlToCopy = viewerUrlText.querySelector('a').href;
+            navigator.clipboard.writeText(urlToCopy).then(() => {
+                console.log('URL panoya kopyalandı!');
+                messageDiv.textContent = 'URL panoya kopyalandı!';
+                messageDiv.style.color = 'green';
+                setTimeout(() => messageDiv.textContent = '', 3000); // 3 saniye sonra mesajı temizle
+            }).catch(err => {
+                console.error('URL kopyalanamadı:', err);
+                messageDiv.textContent = 'URL kopyalanamadı. Lütfen manuel olarak kopyalayın.';
+                messageDiv.style.color = 'red';
+            });
+        });
+
+        // Alarm butonları için olay dinleyicileri
+        setAlarmButton.addEventListener('click', toggleAlarm);
+        muteAlarmButton.addEventListener('click', resetAlarmState); // Sustur butonuna basıldığında alarmı sıfırla
+
+        // Log filtreleme ve temizleme butonları için olay dinleyicileri
+        filterLogsButton.addEventListener('click', filterLogs);
+        clearLogsButton.addEventListener('click', clearAllLogs);
+
+
+        async function createRoomAndStream() {
+            if (isStreaming) {
+                stopStreaming();
+                startButton.textContent = 'Yayını Başlat';
+                cameraNameInput.disabled = false;
+                roomStatusDiv.textContent = '';
+                messageDiv.textContent = 'Yayın durduruldu.';
+                messageDiv.style.color = 'orange';
+                viewerUrlDisplay.style.display = 'none'; // URL'yi gizle
+                resetAlarmState(); // Yayın durdurulduğunda alarmı sıfırla
+                return;
+            }
+
+            const cameraName = cameraNameInput.value.trim();
+            if (!cameraName) {
+                messageDiv.textContent = 'Lütfen bir kamera adı girin!';
+                messageDiv.style.color = '#dc3545';
+                return;
+            }
+            
+            messageDiv.textContent = 'Kamera başlatılıyor...';
+            messageDiv.style.color = 'blue';
+
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                videoElement.srcObject = stream;
+                await videoElement.play();
+
+                publisherCanvas.width = videoElement.videoWidth;
+                publisherCanvas.height = videoElement.videoHeight;
+
+                // Sunucuya oda oluşturma isteği gönder (kamera adı ile)
+                socket.emit('createRoom', cameraName);
+
+            } catch (err) {
+                console.error('Kamera erişim hatası:', err);
+                if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+                    messageDiv.textContent = 'Kamera erişimine izin vermediniz. Lütfen tarayıcınızın izinlerini kontrol edin ve sayfayı yenileyin.';
+                } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+                    messageDiv.textContent = 'Kamera bulunamadı. Lütfen bir kamera bağlı olduğundan emin olun.';
+                } else {
+                    messageDiv.textContent = `Kamera başlatılırken bir hata oluştu: ${err.message}`;
+                }
+                messageDiv.style.color = '#dc3545';
+                addLogEntry('alarm_error', `Kamera başlatılırken hata: ${err.message}`);
+            }
+        }
+
+        function drawVideoToCanvasAndStream(currentTime) {
+            if (videoElement.readyState === videoElement.HAVE_ENOUGH_DATA && isStreaming && currentCameraName) {
+                publisherContext.drawImage(videoElement, 0, 0, publisherCanvas.width, publisherCanvas.height);
+                
+                const elapsed = currentTime - lastFrameTime;
+                if (elapsed > (1000 / frameRate)) {
+                    const imageData = publisherCanvas.toDataURL('image/jpeg', 0.7);
+                    // Video karesini kamera adıyla birlikte gönder
+                    socket.emit('videoFrame', { room: currentCameraName, frame: imageData });
+                    lastFrameTime = currentTime;
+
+                    // Eğer alarm kuruluysa ve model yüklüyse, belirli aralıklarla analiz yap
+                    if (alarmIsSet && modelLoaded && (performance.now() - lastAnalysisTime > ANALYSIS_INTERVAL_MS)) {
+                        const selectedTarget = detectionTargetSelect.value;
+                        // publisherCanvas'ı doğrudan kullanabiliriz, çünkü zaten video karesini çiziyor
+                        detectMotionObjectBased(selectedTarget, publisherCanvas); 
+                        lastAnalysisTime = performance.now();
+                    }
+                }
+            }
+            if (isStreaming) {
+                animationFrameId = requestAnimationFrame(drawVideoToCanvasAndStream);
+            }
+        }
+
+        function stopStreaming() {
+            isStreaming = false;
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
+            }
+            if (videoElement.srcObject) {
+                videoElement.srcObject.getTracks().forEach(track => track.stop());
+                videoElement.srcObject = null;
+            }
+            publisherContext.clearRect(0, 0, publisherCanvas.width, publisherCanvas.height);
+        }
+
+        // Alarm fonksiyonları (subscriber'dan kopyalandı ve uyarlandı)
+        function toggleAlarm() {
+            if (!currentCameraName) {
+                messageDiv.textContent = 'Alarm kurmak için önce yayını başlatmalısınız!';
+                messageDiv.style.color = '#dc3545';
+                addLogEntry('alarm_error', 'Alarm kurulamadı: Yayın başlatılmalı.');
+                return;
+            }
+            if (!modelLoaded) {
+                messageDiv.textContent = 'Nesne algılama modeli henüz yüklenmedi. Lütfen bekleyin.';
+                messageDiv.style.color = '#dc3545';
+                addLogEntry('alarm_error', 'Alarm kurulamadı: Model yüklenmedi.');
+                return;
+            }
+
+            if (alarmIsSet) {
+                clearTimeout(alarmActivationTimeoutId);
+                clearInterval(alarmCountdownIntervalId);
+                resetAlarmState();
+                setAlarmButton.textContent = 'Alarmı Kur';
+                alarmStatusDiv.textContent = 'Alarm Durumu: Kapalı';
+                detectionTargetSelect.disabled = false;
+                muteAlarmButton.style.display = 'none';
+                addLogEntry('alarm_reset', 'Alarm kapatıldı.');
+            } else {
+                setAlarmButton.textContent = 'Alarmı İptal Et';
+                alarmStatusDiv.classList.remove('alarm-triggered');
+                detectionTargetSelect.disabled = true;
+                muteAlarmButton.style.display = 'none';
+
+                let countdown = 5;
+                alarmStatusDiv.textContent = `Alarm kuruluyor... (${countdown} saniye içinde aktif olacak)`;
+                addLogEntry('alarm_set', `Alarm kurulumu başlatıldı. Hedef: ${detectionTargetSelect.value}`);
+                
+                alarmCountdownIntervalId = setInterval(() => {
+                    countdown--;
+                    if (countdown > 0) {
+                        alarmStatusDiv.textContent = `Alarm kuruluyor... (${countdown} saniye içinde aktif olacak)`;
+                    } else {
+                        clearInterval(alarmCountdownIntervalId);
+                        alarmCountdownIntervalId = null;
+                        alarmIsSet = true;
+                        alarmStatusDiv.textContent = 'Alarm Durumu: Aktif (Hareket bekleniyor...)';
+                        console.log('Alarm aktif!');
+                        addLogEntry('alarm_set', 'Alarm aktif edildi.');
+                    }
+                }, 1000);
+            }
+        }
+
+        function resetAlarmState() {
+            alarmIsSet = false;
+            if (alarmActivationTimeoutId) {
+                clearTimeout(alarmActivationTimeoutId);
+                alarmActivationTimeoutId = null;
+            }
+            if (alarmCountdownIntervalId) {
+                clearInterval(alarmCountdownIntervalId);
+                alarmCountdownIntervalId = null;
+            }
+            alarmStatusDiv.textContent = 'Alarm Durumu: Kapalı';
+            alarmStatusDiv.classList.remove('alarm-triggered');
+            setAlarmButton.textContent = 'Alarmı Kur';
+            detectionTargetSelect.disabled = false;
+            muteAlarmButton.style.display = 'none';
+            
+            document.body.classList.remove('alarm-active');
+            // Publisher sayfasında cameraDisplayName yerine ana container'ın kendisi yok, bu yüzden body'yi kullanıyoruz.
+            // Eğer kamera adının olduğu container'a özel bir ID atarsak, onu da kullanabiliriz.
+            // Şimdilik body yeterli.
+            movingLightsContainer.classList.remove('active');
+            movingLightsContainer.style.display = 'none';
+            stopSiren();
+            addLogEntry('alarm_muted', 'Alarm susturuldu / sıfırlandı.');
+        }
+
+        async function detectMotionObjectBased(target, imgElementOrCanvas) {
+            if (!modelLoaded || !objectDetectionModel || !imgElementOrCanvas.width || !imgElementOrCanvas.height) {
+                console.warn('Model yüklenmedi veya görüntü/canvas hazır değil.');
+                return;
+            }
+
+            const tempCanvas = document.createElement('canvas');
+            const tempContext = tempCanvas.getContext('2d');
+            tempCanvas.width = ANALYSIS_WIDTH;
+            tempCanvas.height = ANALYSIS_HEIGHT;
+            tempContext.drawImage(imgElementOrCanvas, 0, 0, ANALYSIS_WIDTH, ANALYSIS_HEIGHT);
+
+            const imgTensor = tf.browser.fromPixels(tempCanvas);
+            const predictions = await objectDetectionModel.detect(imgTensor);
+            imgTensor.dispose();
+
+            let detectedTarget = false;
+            
+            // Görüntüyü tekrar çiz (algılama kutuları için)
+            publisherContext.clearRect(0, 0, publisherCanvas.width, publisherCanvas.height);
+            publisherContext.drawImage(imgElementOrCanvas, 0, 0, publisherCanvas.width, publisherCanvas.height);
+
+            predictions.forEach(prediction => {
+                if (prediction.score >= detectionConfidenceThreshold) {
+                    const [y, x, height, width] = prediction.bbox;
+                    const scaleX = publisherCanvas.width / ANALYSIS_WIDTH;
+                    const scaleY = publisherCanvas.height / ANALYSIS_HEIGHT;
+
+                    const scaledX = x * scaleX;
+                    const scaledY = y * scaleY;
+                    const scaledWidth = width * scaleX;
+                    const scaledHeight = height * scaleY;
+
+                    const isTargetClass = TARGET_CLASSES[target].includes(prediction.class);
+                    const isEverythingTarget = (target === 'everything' && predictions.length > 0);
+
+                    if (isTargetClass || isEverythingTarget) {
+                        detectedTarget = true;
+                        publisherContext.beginPath();
+                        publisherContext.rect(scaledX, scaledY, scaledWidth, scaledHeight);
+                        publisherContext.lineWidth = 2;
+                        publisherContext.strokeStyle = 'red';
+                        publisherContext.fillStyle = 'red';
+                        publisherContext.stroke();
+                        publisherContext.fillText(
+                            `${prediction.class} (${Math.round(prediction.score * 100)}%)`,
+                            scaledX,
+                            scaledY > 10 ? scaledY - 5 : 10
+                        );
+                    } else {
+                        publisherContext.beginPath();
+                        publisherContext.rect(scaledX, scaledY, scaledWidth, scaledHeight);
+                        publisherContext.lineWidth = 1;
+                        publisherContext.strokeStyle = 'blue';
+                        publisherContext.fillStyle = 'blue';
+                        publisherContext.stroke();
+                        publisherContext.fillText(
+                            `${prediction.class} (${Math.round(prediction.score * 100)}%)`,
+                            scaledX,
+                            scaledY > 10 ? scaledY - 5 : 10
+                        );
+                    }
+
+                    publisherContext.font = '16px Arial';
+                    publisherContext.fillStyle = 'white';
+                }
+            });
+
+            if (detectedTarget) {
+                triggerAlarm(`ALARM! ${target === 'everything' ? 'Hareket' : target.charAt(0).toUpperCase() + target.slice(1)} Algılandı!`);
+            } else {
+                // Alarm tetiklenmişse ve susturulmamışsa efektleri durdurma
+                if (alarmStatusDiv.classList.contains('alarm-triggered')) {
+                    alarmStatusDiv.textContent = 'Alarm Durumu: Aktif (Hareket bekleniyor...)';
+                    alarmStatusDiv.classList.remove('alarm-triggered');
+                }
+            }
+        }
+
+        function triggerAlarm(message) {
+            if (alarmIsSet) {
+                if (!alarmStatusDiv.classList.contains('alarm-triggered')) {
+                    alarmStatusDiv.textContent = message;
+                    alarmStatusDiv.classList.add('alarm-triggered');
+                    document.body.classList.add('alarm-active'); // Arka planı yanıp söndür
+                    // Publisher sayfasında kamera adı için ayrı bir yanıp sönen arka plan yok, body'yi kullanıyoruz.
+                    movingLightsContainer.style.display = 'block'; // Işıkları göster
+                    movingLightsContainer.classList.add('active'); // Işıkları hareketlendir
+                    playSiren(); // Siren sesini çal
+                    muteAlarmButton.style.display = 'inline-block'; // Sustur butonunu göster
+                    console.log(message);
+                    addLogEntry('alarm_triggered', message);
+                }
+            }
+        }
+
+        window.addEventListener('beforeunload', () => {
+            stopStreaming();
+            socket.disconnect();
+            if (objectDetectionModel) {
+                objectDetectionModel.dispose();
+            }
+            if (alarmCountdownIntervalId) {
+                clearInterval(alarmCountdownIntervalId);
+            }
+            stopSiren();
+        });
+    </script>
+</body>
+</html>

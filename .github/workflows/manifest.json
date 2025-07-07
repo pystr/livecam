@@ -1,0 +1,21 @@
+{
+    "name": "Canlı Video İzleyici",
+    "short_name": "Video İzleyici",
+    "description": "Canlı video yayını izleme ve hareket algılama uygulaması.",
+    "start_url": "/subscriber",
+    "display": "standalone",
+    "background_color": "#f4f4f4",
+    "theme_color": "#0056b3",
+    "icons": [
+        {
+            "src": "/icons/icon-192x192.png",
+            "sizes": "192x192",
+            "type": "image/png"
+        },
+        {
+            "src": "/icons/icon-512x512.png",
+            "sizes": "512x512",
+            "type": "image/png"
+        }
+    ]
+}

@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Canlı Video Yayını ve İzleyici (Socket.IO)</title>
+    <!-- Socket.IO istemci kütüphanesi. Sunucu çalışırken bu URL otomatik olarak sunulur. -->
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 20px;
+            background-color: #f4f4f4;
+            color: #333;
+        }
+        .container {
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            max-width: 900px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        h1 {
+            color: #0056b3;
+            margin-bottom: 20px;
+        }
+        video {
+            display: none; /* Video elemanını gizle, sadece akışı almak için kullanacağız */
+        }
+        canvas {
+            border: 2px solid #007bff;
+            border-radius: 8px;
+            margin: 15px 10px;
+            background-color: #eee;
+            /* Responsive tasarım için maksimum genişlik */
+            max-width: 100%; 
+            height: auto;
+        }
+        .canvas-wrapper {
+            display: flex;
+            flex-wrap: wrap; /* Küçük ekranlarda alt alta gelmesi için */
+            justify-content: center;
+            gap: 20px; /* Canvaslar arası boşluk */
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            background-color: #28a745;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+            margin-top: 20px;
+        }
+        button:hover {
+            background-color: #218838;
+        }
+        #message {
+            margin-top: 15px;
+            font-size: 1.1em;
+            color: #dc3545;
+        }
+        .canvas-label {
+            font-weight: bold;
+            margin-top: 10px;
+            color: #555;
+        }
+        .info-box {
+            background-color: #e0f7fa;
+            border: 1px solid #00bcd4;
+            border-radius: 5px;
+            padding: 10px;
+            margin-top: 15px;
+            font-size: 0.9em;
+            color: #00796b;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Canlı Video Yayını (Socket.IO)</h1>
+        <p>Kameradan gelen görüntüyü yayınlayın ve diğer istemcilerin yayınını izleyin.</p>
+        <button id="startButton">Kamerayı Başlat ve Yayınla</button>
+        <p id="message"></p>
+        <div class="info-box">
+            <strong>Bilgi:</strong> Yayınladığınız görüntüyü "Yayınladığınız Görüntü" alanında göreceksiniz. Başka bir tarayıcı sekmesi veya cihaz açtığınızda, o sekmede/cihazda "Alınan Görüntü" alanında bu yayını izleyebileceksiniz.
+        </div>
+    </div>
+
+    <!-- Video akışını almak için gizli video elemanı -->
+    <video id="videoElement" autoplay playsinline muted></video>
+    
+    <div class="canvas-wrapper">
+        <div>
+            <div class="canvas-label">Yayınladığınız Görüntü (Publisher)</div>
+            <!-- Yayıncının görüntüyü çizeceği Canvas -->
+            <canvas id="publisherCanvas"></canvas>
+        </div>
+        <div>
+            <div class="canvas-label">Alınan Görüntü (Subscriber)</div>
+            <!-- Abone olanların görüntüyü çizeceği Canvas -->
+            <canvas id="subscriberCanvas"></canvas>
+        </div>
+    </div>
+
+    <script>
+        const videoElement = document.getElementById('videoElement');
+        const publisherCanvas = document.getElementById('publisherCanvas');
+        const subscriberCanvas = document.getElementById('subscriberCanvas');
+        const publisherContext = publisherCanvas.getContext('2d');
+        const subscriberContext = subscriberCanvas.getContext('2d');
+        const startButton = document.getElementById('startButton');
+        const messageDiv = document.getElementById('message');
+
+        let animationFrameId; // requestAnimationFrame ID'sini tutmak için
+        let isStreaming = false; // Yayın durumunu takip etmek için
+        const frameRate = 10; // Saniyede kaç kare gönderileceği (FPS)
+        let lastFrameTime = 0;
+
+        // Socket.IO istemcisi ile sunucuya bağlan
+        // Varsayılan olarak sunucunun çalıştığı adrese bağlanır (http://localhost:3000)
+        const socket = io(); 
+
+        // Socket.IO bağlantı olayları
+        socket.on('connect', () => {
+            console.log('Socket.IO sunucusuna bağlandı.');
+            messageDiv.textContent = 'Sunucuya bağlandı.';
+            messageDiv.style.color = 'blue';
+        });
+
+        socket.on('disconnect', () => {
+            console.log('Socket.IO sunucusundan bağlantı kesildi.');
+            messageDiv.textContent = 'Sunucu bağlantısı kesildi.';
+            messageDiv.style.color = 'red';
+            isStreaming = false; // Yayın durumunu sıfırla
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
+            }
+            if (videoElement.srcObject) {
+                videoElement.srcObject.getTracks().forEach(track => track.stop());
+            }
+        });
+
+        socket.on('connect_error', (err) => {
+            console.error('Socket.IO bağlantı hatası:', err);
+            messageDiv.textContent = `Sunucuya bağlanılamadı: ${err.message}`;
+            messageDiv.style.color = 'red';
+        });
+
+        // Sunucudan gelen videoFrame olayını dinle
+        socket.on('videoFrame', (frame) => {
+            // Gelen Base64 görüntüyü bir Image nesnesine yükle
+            const img = new Image();
+            img.onload = () => {
+                // Görüntü yüklendiğinde Subscriber Canvas'a çiz
+                subscriberCanvas.width = img.width;
+                subscriberCanvas.height = img.height;
+                subscriberContext.drawImage(img, 0, 0, subscriberCanvas.width, subscriberCanvas.height);
+                // Burada TensorFlow.js analizi yapılabilir (Subscriber tarafı için)
+                // Örneğin: runTensorFlowAnalysis(subscriberCanvas);
+            };
+            img.src = frame; // Base64 verisini Image'ın kaynağı olarak ayarla
+        });
+
+        startButton.addEventListener('click', startCameraAndStream);
+
+        async function startCameraAndStream() {
+            if (isStreaming) {
+                // Eğer zaten yayın yapılıyorsa, durdur
+                stopStreaming();
+                startButton.textContent = 'Kamerayı Başlat ve Yayınla';
+                messageDiv.textContent = 'Yayın durduruldu.';
+                messageDiv.style.color = 'orange';
+                return;
+            }
+
+            messageDiv.textContent = ''; // Hata mesajını temizle
+            try {
+                // Kamera akışını al
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                videoElement.srcObject = stream;
+
+                // Video yüklenene kadar bekle
+                await videoElement.play();
+
+                // Canvas boyutlarını video boyutlarına ayarla
+                publisherCanvas.width = videoElement.videoWidth;
+                publisherCanvas.height = videoElement.videoHeight;
+                // Subscriber Canvas'ı da başlangıçta aynı boyuta ayarla
+                subscriberCanvas.width = videoElement.videoWidth;
+                subscriberCanvas.height = videoElement.videoHeight;
+
+
+                // Video akışını Canvas'a çizmeye ve yayınlamaya başla
+                isStreaming = true;
+                drawVideoToCanvasAndStream(0); // İlk frame zamanı 0 olarak başla
+
+                startButton.textContent = 'Yayını Durdur'; // Buton metnini değiştir
+                messageDiv.textContent = 'Kamera akışı başladı ve yayınlanıyor!';
+                messageDiv.style.color = 'green';
+
+            } catch (err) {
+                console.error('Kamera erişim hatası:', err);
+                if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+                    messageDiv.textContent = 'Kamera erişimine izin vermediniz. Lütfen tarayıcınızın izinlerini kontrol edin ve sayfayı yenileyin.';
+                } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+                    messageDiv.textContent = 'Kamera bulunamadı. Lütfen bir kamera bağlı olduğundan emin olun.';
+                } else {
+                    messageDiv.textContent = `Kamera başlatılırken bir hata oluştu: ${err.message}`;
+                }
+                messageDiv.style.color = '#dc3545'; // Hata mesajı için kırmızı
+            }
+        }
+
+        function drawVideoToCanvasAndStream(currentTime) {
+            // Video elemanı yüklendiğinde ve oynatılıyorsa çizim yap
+            if (videoElement.readyState === videoElement.HAVE_ENOUGH_DATA) {
+                publisherContext.drawImage(videoElement, 0, 0, publisherCanvas.width, publisherCanvas.height);
+                
+                // Belirli bir kare hızında göndermek için kontrol
+                const elapsed = currentTime - lastFrameTime;
+                if (elapsed > (1000 / frameRate)) {
+                    // Canvas içeriğini Base64 JPEG formatına dönüştür (kalite 0.7)
+                    const imageData = publisherCanvas.toDataURL('image/jpeg', 0.7);
+                    // Socket.IO üzerinden sunucuya gönder
+                    socket.emit('videoFrame', imageData);
+                    lastFrameTime = currentTime;
+                }
+            }
+            // Bir sonraki kareyi çizmek için tekrar çağır
+            if (isStreaming) {
+                animationFrameId = requestAnimationFrame(drawVideoToCanvasAndStream);
+            }
+        }
+
+        function stopStreaming() {
+            isStreaming = false;
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
+            }
+            if (videoElement.srcObject) {
+                videoElement.srcObject.getTracks().forEach(track => track.stop());
+                videoElement.srcObject = null;
+            }
+            // Canvasları temizle
+            publisherContext.clearRect(0, 0, publisherCanvas.width, publisherCanvas.height);
+            subscriberContext.clearRect(0, 0, subscriberCanvas.width, subscriberCanvas.height);
+        }
+
+        // Sayfa kapatıldığında veya yenilendiğinde kamera akışını durdur
+        window.addEventListener('beforeunload', () => {
+            stopStreaming();
+            socket.disconnect(); // Socket bağlantısını da kapat
+        });
+    </script>
+</body>
+</html>
